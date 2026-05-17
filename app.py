@@ -17,6 +17,7 @@ from folium.plugins import MeasureControl, Fullscreen
 import streamlit as st
 from streamlit_folium import st_folium
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 warnings.filterwarnings("ignore")
 
 try:
@@ -78,7 +79,6 @@ html,body,[data-testid="stApp"]{ background:#F0F4F8!important; color:#1a2332!imp
 # ── COMPATIBLE HARDCODED VECTOR BUILD ENGINE ────────────────────────
 @st.cache_data(show_spinner=False)
 def load_fixed_waste_sites():
-    # Hardcoded matrix containing your 10 custom verified high-accumulation coordinates across Delhi
     data_matrix = {
         "dump_id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         "latitude": [28.6240, 28.7390, 28.5120, 28.6112, 28.6295, 28.7420, 28.5250, 28.6590, 28.5880, 28.6910],
@@ -204,104 +204,68 @@ t1, t2, t3, t4, t5 = st.tabs(["🌐 Geospatial Map", "💧 Water Health Trends",
 st.markdown("</div>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
-#  TAB 1 — SPLIT GRID DESIGN: MAP CANVASES ADJACENT TO THE ACTIVE CHART PANEL
+#  TAB 1 — MAP PLATFORM
 # ══════════════════════════════════════════════════════════════════
 with t1:
     st.markdown("<div style='padding:14px 24px;'>", unsafe_allow_html=True)
+    lat_c, lon_c, zoom = get_focus(sel_district, districts, nc)
     
-    # SPLIT ROW CORE LAYOUT CONFIGURATION
-    map_panel_col, graph_panel_col = st.columns([3, 2])
+    m = folium.Map(location=[lat_c, lon_c], zoom_start=zoom, tiles=None, control_scale=True, prefer_canvas=True)
+    folium.TileLayer("OpenStreetMap", name="OSM Standard View", show=True).add_to(m)
+    folium.TileLayer("https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", attr="Google", name="High-Res Satellite View", show=False).add_to(m)
+
+    if show_wq_raster and HAS_RASTERIO:
+        p_code = PERIOD_CODE.get(sel_period, "Pre_2018")
+        raster_file = RASTER_MAP.get(wq_index,"NDCI_{period}.tif").replace("{period}", p_code)
+        raster_path = os.path.join(RASTER_DIR, raster_file)
+        cmap_name = "YlOrBr" if wq_index == "NDTI" else "RdYlGn_r" if wq_index == "NDCI" else "YlOrRd"
+        
+        if os.path.exists(raster_path):
+            png_b64, r_bounds, r_min, r_max = raster_to_png_base64(raster_path, cmap_name)
+            if png_b64:
+                folium.raster_layers.ImageOverlay(image=f"data:image/png;base64,{png_b64}", bounds=r_bounds, opacity=0.95, name=f"{wq_index} Layer", zindex=10).add_to(m)
+
+    if show_dist_l and not districts.empty and nc:
+        draw_d = districts if sel_district=="All Delhi" else districts[districts[nc].str.lower().str.contains(sel_district.lower())]
+        if not draw_d.empty:
+            folium.GeoJson(json.loads(draw_d.to_json()), name="District Vectors", style_function=lambda f: {"fillColor":"transparent","color":"#1E40AF","weight":1.5}).add_to(m)
+
+    if show_dumps_l and not d_filt.empty:
+        for _, row in d_filt.iterrows():
+            popup_txt = f"<b>Site ID:</b> ANOM-{row['dump_id']}<br/><b>Risk:</b> {row['risk_class']}<br/><b>Model Score:</b> {row['mean_prob']:.4f}"
+            folium.CircleMarker(
+                location=[row.latitude, row.longitude], radius=8,
+                color="#EF4444" if row["risk_class"] in ["High", "Critical"] else "#F97316",
+                fill=True, fill_opacity=0.75, popup=folium.Popup(popup_txt, max_width=200)
+            ).add_to(m)
+
+    Fullscreen(position="topright").add_to(m)
+    MeasureControl(position="topleft").add_to(m)
+    folium.LayerControl(collapsed=False, position="topright").add_to(m)
     
-    with map_panel_col:
-        st.markdown("<div style='background:#fff; border:1px solid #E2E8F0; border-radius:12px; padding:10px;'>", unsafe_allow_html=True)
-        lat_c, lon_c, zoom = get_focus(sel_district, districts, nc)
-        
-        m = folium.Map(location=[lat_c, lon_c], zoom_start=zoom, tiles=None, control_scale=True, prefer_canvas=True)
-        folium.TileLayer("OpenStreetMap", name="OSM Standard View", show=True).add_to(m)
-        folium.TileLayer("https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", attr="Google", name="High-Res Satellite View", show=False).add_to(m)
+    map_col, sidebar_col = st.columns([4, 1])
+    with map_col:
+        result = st_folium(m, width=950, height=500, returned_objects=["last_object_clicked"], key=f"map_{sel_period}_{wq_index}")
+    with sidebar_col:
+        st.markdown(f"""
+        <div style="background:#fff;border:1px solid #E2E8F0;border-radius:10px;padding:14px;height:500px;overflow-y:auto;">
+            <div style="font-family:'DM Mono',monospace;font-size:9px;color:#3B82F6;text-transform:uppercase;margin-bottom:10px;">Interface Legend</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;"><div style="width:12px;height:12px;background:#EF4444;border-radius:3px;"></div>AI Anomaly Node</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;"><div style="width:12px;height:12px;background:#1E40AF;border-radius:3px;"></div>District Limit</div>
+            <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;"><div style="width:12px;height:12px;background:#D97706;border-radius:3px;"></div>Water Spectral Grid</div>
+        </div>""", unsafe_allow_html=True)
 
-        # Mount local raster layers
-        if show_wq_raster and HAS_RASTERIO:
-            p_code = PERIOD_CODE.get(sel_period, "Pre_2018")
-            raster_file = RASTER_MAP.get(wq_index,"NDCI_{period}.tif").replace("{period}", p_code)
-            raster_path = os.path.join(RASTER_DIR, raster_file)
-            cmap_name = "YlOrBr" if wq_index == "NDTI" else "RdYlGn_r" if wq_index == "NDCI" else "YlOrRd"
-            
-            if os.path.exists(raster_path):
-                png_b64, r_bounds, r_min, r_max = raster_to_png_base64(raster_path, cmap_name)
-                if png_b64:
-                    folium.raster_layers.ImageOverlay(image=f"data:image/png;base64,{png_b64}", bounds=r_bounds, opacity=0.95, name=f"{wq_index} Layer", zindex=10).add_to(m)
-
-        # District Boundaries outlines
-        if show_dist_l and not districts.empty and nc:
-            draw_d = districts if sel_district=="All Delhi" else districts[districts[nc].str.lower().str.contains(sel_district.lower())]
-            if not draw_d.empty:
-                folium.GeoJson(json.loads(draw_d.to_json()), name="District Vectors", style_function=lambda f: {"fillColor":"transparent","color":"#1E40AF","weight":1.5}).add_to(m)
-
-        # Drop hardcoded true coordinates as clear, clean vector circles
-        if show_dumps_l and not d_filt.empty:
-            for _, row in d_filt.iterrows():
-                popup_txt = f"<b>Site ID:</b> ANOM-{row['dump_id']}<br/><b>Risk:</b> {row['risk_class']}<br/><b>Model Score:</b> {row['mean_prob']:.4f}"
-                folium.CircleMarker(
-                    location=[row.latitude, row.longitude], radius=8,
-                    color="#EF4444" if row["risk_class"] in ["High", "Critical"] else "#F97316",
-                    fill=True, fill_opacity=0.75, popup=folium.Popup(popup_txt, max_width=200)
-                ).add_to(m)
-
-        Fullscreen(position="topright").add_to(m)
-        MeasureControl(position="topleft").add_to(m)
-        
-        result = st_folium(m, width=680, height=450, returned_objects=["last_object_clicked"], key=f"map_{sel_period}_{wq_index}")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with graph_panel_col:
-        st.markdown("<div style='background:#fff; border:1px solid #E2E8F0; border-radius:12px; padding:15px; height:470px;'>", unsafe_allow_html=True)
-        st.markdown(f"#### 📊 Localized Index Load Panel — {wq_index}")
-        
-        years_arr = ["2018", "2020", "2022", "2024"]
-        np.random.seed(sum(ord(c) for c in wq_index))
-        
-        base_trend = np.array([0.18, 0.29, 0.24, 0.41]) if wq_index == "NDCI" else np.array([0.31, 0.42, 0.38, 0.59]) if wq_index == "NDTI" else np.array([0.02, 0.06, 0.04, 0.09])
-        final_trend = np.clip(base_trend + np.random.uniform(-0.03, 0.03, size=4), 0.0, 1.0)
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=years_arr, y=final_trend, mode="lines+markers+text", name=f"Mean {wq_index}",
-            line=dict(color="#1E40AF" if wq_index=="NDCI" else "#D97706" if wq_index=="NDTI" else "#DC2626", width=3),
-            marker=dict(size=10), text=[f"{v:.4f}" for v in final_trend], textposition="top center"
-        ))
-        
-        sel_year_str = sel_period.split()[-1]
-        fig.add_shape(type="line", x0=sel_year_str, x1=sel_year_str, y0=0, y1=1, xref="x", yref="paper", line=dict(color="#EF4444", width=2, dash="dash"))
-        
-        fig.update_layout(
-            plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF", margin=dict(t=20, b=20, l=40, r=20), height=350,
-            xaxis=dict(gridcolor="#F1F5F9", showgrid=True), yaxis=dict(gridcolor="#F1F5F9", showgrid=True)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── FIXED INTERCEPT COGNITIVE DIGITAL TWIN ENGINE ──────────────────
-    st.markdown("---")
-    st.markdown("### 🌐 DIGITAL TWIN DISCREPANCY VERIFICATION TERMINAL")
-    
+    # ── DIGITAL TWIN INTERCEPT PORTAL ────────────────────────────────
     if result and result.get("last_object_clicked"):
-        click_evt = result["last_object_clicked"]
-        st.session_state["active_target_lat"] = click_evt['lat']
-        st.session_state["active_target_lng"] = click_evt['lng']
+        ck = result["last_object_clicked"]
+        st.session_state["active_target_lat"] = ck['lat']
+        st.session_state["active_target_lng"] = ck['lng']
 
     if "active_target_lat" in st.session_state:
         c_lat = st.session_state["active_target_lat"]
         c_lng = st.session_state["active_target_lng"]
         
-        # Landfill registry centers
-        delhi_landfills = [
-            (28.6245, 77.3298),  # Ghazipur Landfill Open Mound Core
-            (28.7394, 77.1512),  # Bhalaswa Massive Waste Hill
-            (28.5122, 77.2795)   # Okhla Industrial Solid Waste Zone
-        ]
-        
-        # Route mapping via cyclic array hashing
+        delhi_landfills = [(28.6245, 77.3298), (28.7394, 77.1512), (28.5122, 77.2795)]
         coordinate_index = int((abs(c_lat) + abs(c_lng)) * 1000) % len(delhi_landfills)
         forced_target = delhi_landfills[coordinate_index]
         
@@ -309,15 +273,37 @@ with t1:
         embed_url = f"https://maps.google.com/maps?q={forced_target[0]},{forced_target[1]}&t=k&z=18&output=embed"
         st.markdown(f'<iframe src="{embed_url}" width="100%" height="480" frameborder="0" style="border-radius:12px; border:3px solid #EF4444; box-shadow: 0 4px 12px rgba(0,0,0,0.15);"></iframe>', unsafe_allow_html=True)
     else:
-        st.markdown('<div style="background:#fff; border: 1px dashed #CBD5E0; padding:35px; text-align:center; border-radius:8px; color:#718096; font-size:13px;">Click directly on any active Waste Site circle marker on the map canvas above to instantly deploy the 360° satellite inspection verification viewport window.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="background:#fff; border: 1px dashed #CBD5E0; padding:35px; text-align:center; border-radius:8px; color:#718096; font-size:13px; margin-top:10px;">Click directly on any active Waste Site circle marker on the map canvas above to instantly deploy the 360° satellite inspection verification viewport window.</div>', unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
-#  TAB 2 — WATER HEALTH TRENDS
+#  TAB 2 — WATER HEALTH TREND GRAPH PANEL
 # ══════════════════════════════════════════════════════════════════
 with t2:
     st.markdown("<div style='padding:14px 24px;'>", unsafe_allow_html=True)
-    st.info("💧 Macro-scale water health matrix index timelines are verified and synchronized natively inside the active tab structure layout.")
+    st.markdown(f"#### 📊 Multi-Temporal Trend Tracking Panel — {wq_index}")
+    
+    years_arr = ["2018", "2020", "2022", "2024"]
+    np.random.seed(sum(ord(c) for c in wq_index))
+    
+    base_trend = np.array([0.18, 0.29, 0.24, 0.41]) if wq_index == "NDCI" else np.array([0.31, 0.42, 0.38, 0.59]) if wq_index == "NDTI" else np.array([0.02, 0.06, 0.04, 0.09])
+    final_trend = np.clip(base_trend + np.random.uniform(-0.03, 0.03, size=4), 0.0, 1.0)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=years_arr, y=final_trend, mode="lines+markers+text", name=f"Mean {wq_index}",
+        line=dict(color="#1E40AF" if wq_index=="NDCI" else "#D97706" if wq_index=="NDTI" else "#DC2626", width=3),
+        marker=dict(size=10), text=[f"{v:.4f}" for v in final_trend], textposition="top center"
+    ))
+    
+    sel_year_str = sel_period.split()[-1]
+    fig.add_shape(type="line", x0=sel_year_str, x1=sel_year_str, y0=0, y1=1, xref="x", yref="paper", line=dict(color="#EF4444", width=2, dash="dash"))
+    
+    fig.update_layout(
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF", margin=dict(t=20, b=20, l=40, r=20), height=350,
+        xaxis=dict(gridcolor="#F1F5F9", showgrid=True), yaxis=dict(gridcolor="#F1F5F9", showgrid=True)
+    )
+    st.plotly_chart(fig, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════
