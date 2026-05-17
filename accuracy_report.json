@@ -1,0 +1,7 @@
+{
+    "Overall_Accuracy": 1.0,
+    "Kappa_Score": 1.0,
+    "Precision_Waste": 1.0,
+    "Recall_Waste": 1.0,
+    "F1_Score_Waste": 1.0
+}
